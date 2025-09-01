@@ -10,3 +10,4 @@ An example of both a primitive box shape and a complex convex shape being voxeli
 * https://fgiesen.wordpress.com/2009/12/13/decoding-morton-codes/
 * https://stackoverflow.com/questions/1024754/how-to-compute-a-3d-morton-number-interleave-the-bits-of-3-ints
 * https://omnigoat.github.io/2015/03/09/box-triangle-intersection/ (not actually used but maybe later)
+* A lot of different UE5 files (recast, navigation system, different collision shapes)
