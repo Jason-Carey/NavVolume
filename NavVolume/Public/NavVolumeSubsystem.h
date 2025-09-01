@@ -34,6 +34,9 @@ namespace NavVolume::Task
 	template<int32 VoxelSize>
 	struct TVoxelizer<VoxelSize>
 	{
+		using FReturnType = TArray<FMortonCode>;
+		using FTaskHandle = TTask<FReturnType>;
+		
 		template<typename TransformType, typename BoundsType, typename... ArgTypes>
 		static decltype(auto) MakeVoxelizer(TransformType&& InTransform, BoundsType&& InBounds, ArgTypes&&... InArgs)
 		{
@@ -42,6 +45,30 @@ namespace NavVolume::Task
 				Forward<BoundsType>(InBounds),
 				ForwardAsTuple(Forward<ArgTypes>(InArgs)...) // This should preserve lvalue and rvalues
 			);
+		}
+
+		template<typename TransformType, typename BoundsType, typename... ArgTypes>
+		static FORCEINLINE FTaskHandle LaunchVoxelizerAsync(TransformType&& InTransform, BoundsType&& InBounds, ArgTypes&&... InArgs)
+		{
+			auto Voxelizer = MakeVoxelizer(
+				Forward<TransformType>(InTransform),
+				Forward<BoundsType>(InBounds),
+				Forward<ArgTypes>(InArgs)...
+			);
+
+			return Launch(UE_SOURCE_LOCATION, MoveTemp(Voxelizer));
+		}
+
+		template<typename TransformType, typename BoundsType, typename... ArgTypes>
+		static FORCEINLINE FReturnType LaunchVoxelizer(TransformType&& InTransform, BoundsType&& InBounds, ArgTypes&&... InArgs)
+		{
+			auto Voxelizer = MakeVoxelizer(
+				Forward<TransformType>(InTransform),
+				Forward<BoundsType>(InBounds),
+				Forward<ArgTypes>(InArgs)...
+			);
+
+			return Voxelizer();
 		}
 	};
 	
@@ -83,44 +110,6 @@ namespace NavVolume::Task
 		TTuple<ArgTypes...> Args;
 		TArray<FMortonCode> MortonCodes;
 	};
-
-	template<int32 VoxelSize>
-	class TAsyncVoxelizer
-	{
-	public:
-		using FVoxelizerHandle = TTask<TArray<FMortonCode>>;
-		
-		void Enqueue(const FKAggregateGeom& AggGeom, FTransform&& WorldTransform, FBox&& WorldBounds)
-		{
-			const FVoxelizerHandle TaskHandle = Launch(
-				UE_SOURCE_LOCATION,
-				TVoxelizer<VoxelSize>::MakeVoxelizer(MoveTemp(WorldTransform), MoveTemp(WorldBounds), AggGeom.BoxElems, AggGeom.ConvexElems, AggGeom.SphereElems, AggGeom.SphylElems)
-			);
-			
-			TaskHandles.Add(TaskHandle);
-		}
-
-		void Run()
-		{
-			//Launch(UE_SOURCE_LOCATION,
-			//[&]
-			//{
-				for (int32 Index = 0; Index < TaskHandles.Num(); ++Index)
-				{
-					TArray<FMortonCode> TempMortonCodes = TaskHandles[Index].GetResult();
-					MortonCodes.Append(MoveTemp(TempMortonCodes));
-				}
-					
-				MortonCodes.Sort();
-				MortonCodes.SetNum(Algo::Unique(MortonCodes));  UE_LOG(LogTemp, Warning, TEXT("Morton Codes: %d"), MortonCodes.Num());
-			//}
-			//, TaskHandles);
-		}
-		
-	//private:
-		TArray<FMortonCode> MortonCodes;
-		TArray<FVoxelizerHandle> TaskHandles;
-	};
 }
 
 /**
@@ -135,8 +124,7 @@ public:
 	static constexpr int32 VoxelSize = 32;
 	
 	using FSparseVoxelOctree = NavVolume::Octree::TSparseVoxelOctree<VoxelSize>;
-	using FAsyncVoxelizer = NavVolume::Task::TAsyncVoxelizer<VoxelSize>;
-	FAsyncVoxelizer AsyncVoxelizer;
+	using FVoxelizer = NavVolume::Task::TVoxelizer<VoxelSize>;
 	
 	TArray<FOverlapResult> GetBoxOverlaps(const FVector& Center, const FVector& Extents, const FQuat& Rotation, const ECollisionChannel Channel)
 	{
@@ -153,122 +141,42 @@ public:
 	void CreateNavigableVolume(const FBox& WorldBounds)
 	{
 		TArray<FOverlapResult> Overlaps = GetBoxOverlaps(WorldBounds, ECC_WorldStatic);
-
+		TArray<FVoxelizer::FTaskHandle> TaskHandles;
+		TaskHandles.Reserve(Overlaps.Num());
+		
 		for (const FOverlapResult& Overlap : Overlaps)
 		{
 			INavRelevantInterface* Interface = Cast<INavRelevantInterface>(Overlap.Component);
-	
+			
 			if (Interface != nullptr && Interface->IsNavigationRelevant())
 			{
-				AsyncVoxelizer.Enqueue(
-					Interface->GetNavigableGeometryBodySetup()->AggGeom,
+				const FKAggregateGeom& AggGeom = Interface->GetNavigableGeometryBodySetup()->AggGeom;
+				
+				FVoxelizer::FTaskHandle TaskHandle = FVoxelizer::LaunchVoxelizerAsync(
 					Interface->GetNavigableGeometryTransform(),
-					Interface->GetNavigationBounds()
+					Interface->GetNavigationBounds(),
+					AggGeom.BoxElems, AggGeom.ConvexElems, AggGeom.SphereElems, AggGeom.SphylElems
 				);
+				
+				TaskHandles.Add(TaskHandle);
 			}
 		}
+
+		// This is all just temporary - it's a huge sync point
+		// Can be launched as a task with TaskHandles as a dependency 
+		FVoxelizer::FReturnType MortonCodes;
 		
-		AsyncVoxelizer.Run();
-
-
-		const FSparseVoxelOctree Octree(MoveTemp(AsyncVoxelizer.MortonCodes));
+		for (int32 Index = 0; Index < TaskHandles.Num(); ++Index)
+		{
+			FVoxelizer::FReturnType TempMortonCodes = TaskHandles[Index].GetResult();
+			MortonCodes.Append(MoveTemp(TempMortonCodes));
+		}
+					
+		MortonCodes.Sort();
+		MortonCodes.SetNum(Algo::Unique(MortonCodes));
+		UE_LOG(LogTemp, Warning, TEXT("Morton Codes: %d"), MortonCodes.Num());
+		
+		const FSparseVoxelOctree Octree(MoveTemp(MortonCodes));
 		Octree.DebugDraw(GetWorld());
 	}
 };
-
-
-/*
-
-
-
-template<int32 VoxelSize>
-struct TVoxelizeTask
-{
-FKAggregateGeom& AggGeom;
-FTransform WorldTransform;
-FBox WorldBounds;
-TArray<FMortonCode>& MortonCodes;
-		
-void operator()()
-{
-// Allocate approximate memory usage
-const FVector Difference = WorldBounds.Max - WorldBounds.Min;
-const int32 NumVoxels = FMath::Abs((Difference.X * Difference.Y * Difference.Z) * TVoxelTraits<VoxelSize>::InvVoxelSize);
-MortonCodes.Reserve(MortonCodes.Num() + NumVoxels);
-
-// Voxelize each shape
-Voxelize(AggGeom.SphereElems);
-Voxelize(AggGeom.BoxElems);
-Voxelize(AggGeom.SphylElems);
-Voxelize(AggGeom.ConvexElems);
-
-
-MortonCodes.Sort();
-
-UE_LOG(LogTemp, Warning, TEXT("%lld"), MortonCodes[0]);
-
-for (int32 Index = 1; Index < MortonCodes.Num(); ++Index)
-{
-const bool bIsSame = MortonCodes[Index] == MortonCodes[Index - 1];
-
-if (bIsSame)
-{
-UE_LOG(LogTemp, Error, TEXT("%lld"), MortonCodes[Index]);
-}
-else
-{
-UE_LOG(LogTemp, Warning, TEXT("%lld"), MortonCodes[Index]);
-}
-}
-
-UE_LOG(LogTemp, Warning, TEXT("Voxel Task End, Morton Code Num: %d"), MortonCodes.Num());
-}
-
-private:
-template<typename ShapeType, typename AllocatorType>
-void Voxelize(const TArray<ShapeType, AllocatorType>& Shapes)
-{
-auto EncodeVoxel = [&](const FIntVector& WorldPosition)
-{
-const FMortonCode MortonCode = EncodeMorton(QuantizeVoxel<VoxelSize>(WorldPosition));
-MortonCodes.Add(MortonCode);
-};
-			
-for(const ShapeType& Shape : Shapes)
-{
-VoxelizeShape<VoxelSize, ShapeType>(Shape, WorldTransform, WorldBounds, EncodeVoxel);
-}
-}
-};
-
-template<int32 VoxelSize>
-	class TVoxelizer2
-	{
-	public:
-		TArray<FMortonCode> operator()()
-		{
-			Execute(AggGeom.BoxElems);
-			return MoveTemp(MortonCodes);
-		}
-
-	private:
-		template<typename ShapeType, typename AllocatorType>
-		void Execute(const TArray<ShapeType, AllocatorType>& Shapes)
-		{
-			auto EncodeVoxel = [&](const FIntVector& WorldPosition)
-			{
-				const FMortonCode MortonCode = EncodeMorton(QuantizeVoxel<VoxelSize>(WorldPosition));
-				MortonCodes.Add(MortonCode);
-			};
-			
-			Voxelize<VoxelSize>(Shapes, WorldTransform, WorldBounds, EncodeVoxel);
-		}
-		
-	public:
-		const FKAggregateGeom& AggGeom;
-		const FTransform WorldTransform;
-		const FBox WorldBounds;
-		TArray<FMortonCode> MortonCodes;
-	};
-
-*/
