@@ -97,66 +97,52 @@ namespace NavVolume::Voxel
 	};
 	
 	/** Snaps a point to the voxel grid - axis aligned. */
-	template<int32 VoxelSize>
-	FORCEINLINE FVector SnapToVoxelAxis(const FVector& Point) 
+	template<int32 VoxelSize, typename VectorType>
+	FORCEINLINE FIntVector SnapToVoxelAxis(const VectorType& Vector) 
 	{
-		return FVector(
-			FMath::RoundToInt(Point.X * TVoxelTraits<VoxelSize>::InvVoxelSize) * VoxelSize,
-			FMath::RoundToInt(Point.Y * TVoxelTraits<VoxelSize>::InvVoxelSize) * VoxelSize,
-			FMath::RoundToInt(Point.Z * TVoxelTraits<VoxelSize>::InvVoxelSize) * VoxelSize
+		return FIntVector(
+			FMath::RoundToInt(Vector.X * TVoxelTraits<VoxelSize>::InvVoxelSize) * VoxelSize,
+			FMath::RoundToInt(Vector.Y * TVoxelTraits<VoxelSize>::InvVoxelSize) * VoxelSize,
+			FMath::RoundToInt(Vector.Z * TVoxelTraits<VoxelSize>::InvVoxelSize) * VoxelSize
 		);
 	}
-
-	/** Snaps an AABB to the voxel grid - will expand the boundary by half voxel size to ensure full mesh containment. */
-	template<int32 VoxelSize>
-	FORCEINLINE FBox SnapToVoxelAxis(const FBox& AABB) 
-	{
-		return FBox(
-			SnapToVoxelAxis<VoxelSize>(AABB.Min - TVoxelTraits<VoxelSize>::HalfVoxelSize),
-			SnapToVoxelAxis<VoxelSize>(AABB.Max + TVoxelTraits<VoxelSize>::HalfVoxelSize)
-		);
-	}
-
+	
+	/** Reduce the voxel so that each axis-increment is equal to the voxel size. */
 	template<int32 VoxelSize, typename VectorType>
 	FORCEINLINE FIntVector QuantizeVoxel(const VectorType& Vector)
 	{
 		return FIntVector(
-			static_cast<float>(Vector.X) * TVoxelTraits<VoxelSize>::InvVoxelSize,
-			static_cast<float>(Vector.Y) * TVoxelTraits<VoxelSize>::InvVoxelSize,
-			static_cast<float>(Vector.Z) * TVoxelTraits<VoxelSize>::InvVoxelSize
+			Vector.X * TVoxelTraits<VoxelSize>::InvVoxelSize,
+			Vector.Y * TVoxelTraits<VoxelSize>::InvVoxelSize,
+			Vector.Z * TVoxelTraits<VoxelSize>::InvVoxelSize
 		);
 	}
-
+	
+	/** Expand the voxel to its world space position. */
 	template<int32 VoxelSize, typename VectorType>
 	FORCEINLINE FIntVector DequantizeVoxel(const VectorType& Vector)
 	{
 		return FIntVector(
-			static_cast<float>(Vector.X) * VoxelSize,
-			static_cast<float>(Vector.Y) * VoxelSize,
-			static_cast<float>(Vector.Z) * VoxelSize
+			Vector.X * VoxelSize,
+			Vector.Y * VoxelSize,
+			Vector.Z * VoxelSize
 		);
 	}
 
 	/** If an appropriate test exists for the passed shape it will be voxelized by transforming bounded world coordinates into local space and testing intersection. */
-	template<int32 VoxelSize, typename ShapeType, typename ForEachFunc>
-	void Voxelize(const ShapeType& Shape, const FTransform& WorldTransform, const FBox& WorldBounds, ForEachFunc&& ForEachVoxel)
+	template<int32 VoxelSize, typename ShapeType, typename TransformType, typename BoundsType, typename ForEachFunc>
+	void Voxelize(const ShapeType& Shape, TransformType&& WorldTransform, BoundsType&& WorldBounds, ForEachFunc&& ForEachVoxel)
 	{
 		const TShapeTest<VoxelSize, ShapeType>ShapeTest(Shape);
 		
-		// FTransform NormTransform = (Shape.GetTransform() * WorldTransform);
-		// NormTransform.NormalizeRotation();
-		
-		// The geometry is at the origin with identity rotation/scale
 		// Calculate the inverse matrix to transform voxels from world space into the geometry's local space
 		// NOTE: Non-uniform scaling necessitates using FMatrix over FTransform for this use case
 		const FMatrix LocalToWorld = (Shape.GetTransform() * WorldTransform).ToMatrixWithScale();
 		const FMatrix WorldToLocal = LocalToWorld.Inverse();
 
 		// Expand the AABB to align with the voxel grid
-		const FBox VoxelBounds = SnapToVoxelAxis<VoxelSize>(WorldBounds);
-		
-		const FIntVector VoxelMin = FIntVector(VoxelBounds.Min);
-		const FIntVector VoxelMax = FIntVector(VoxelBounds.Max);
+		const FIntVector VoxelMin = SnapToVoxelAxis<VoxelSize>(WorldBounds.Min - TVoxelTraits<VoxelSize>::HalfVoxelSize);
+		const FIntVector VoxelMax = SnapToVoxelAxis<VoxelSize>(WorldBounds.Max + TVoxelTraits<VoxelSize>::HalfVoxelSize);
 
 		for (int32 X = VoxelMin.X; X <= VoxelMax.X; X += VoxelSize)
 		for (int32 Y = VoxelMin.Y; Y <= VoxelMax.Y; Y += VoxelSize)
@@ -172,12 +158,18 @@ namespace NavVolume::Voxel
 		}
 	}
 
-	template<int32 VoxelSize, typename ShapeType, typename AllocatorType, typename ForEachFunc>
-	void Voxelize(const TArray<ShapeType, AllocatorType>& Shapes, const FTransform& WorldTransform, const FBox& WorldBounds, ForEachFunc&& ForEachVoxel)
+	/** Transform an array of shapes sharing a transform and boundary into a voxel representation. */
+	template<int32 VoxelSize, typename ShapeType, typename AllocatorType, typename TransformType, typename BoundsType, typename ForEachFunc>
+	void Voxelize(const TArray<ShapeType, AllocatorType>& Shapes, TransformType&& WorldTransform, BoundsType&& WorldBounds, ForEachFunc&& ForEachVoxel)
 	{
 		for(const ShapeType& Shape : Shapes)
 		{
-			Voxelize<VoxelSize, ShapeType>(Shape, WorldTransform, WorldBounds, Forward<ForEachFunc>(ForEachVoxel));
+			Voxelize<VoxelSize, ShapeType>(
+				Shape,
+				Forward<TransformType>(WorldTransform),
+				Forward<BoundsType>(WorldBounds),
+				Forward<ForEachFunc>(ForEachVoxel)
+			);
 		}
 	}
 } // namespace NavVolume::Voxel
