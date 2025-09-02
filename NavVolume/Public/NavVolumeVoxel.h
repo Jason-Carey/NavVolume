@@ -107,7 +107,7 @@ namespace NavVolume::Voxel
 		);
 	}
 	
-	/** Reduce the voxel so that each axis-increment is equal to the voxel size. */
+	/** Collapse the voxel position that an increment in any axis is equal to the voxel size. */
 	template<int32 VoxelSize, typename VectorType>
 	FORCEINLINE FIntVector QuantizeVoxel(const VectorType& Vector)
 	{
@@ -173,3 +173,4 @@ namespace NavVolume::Voxel
 		}
 	}
 } // namespace NavVolume::Voxel
+
